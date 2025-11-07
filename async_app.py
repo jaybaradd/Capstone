@@ -29,6 +29,7 @@ except ImportError:
 
 # === CONFIGURATION ===
 SAVE_DIR = "calls_mp3s"
+TRANSCRIPTS_DIR = "transcripts_cache"
 FFMPEG_PATH = "/usr/local/bin"
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
 # Get API key from environment
@@ -164,6 +165,105 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==================== EARNINGS CALL FUNCTIONS ====================
+
+def get_cache_paths(company_name):
+    """
+    Generate cache file paths for a company.
+    Returns tuple: (transcript_path, audio_pattern, metadata_path)
+    """
+    os.makedirs(TRANSCRIPTS_DIR, exist_ok=True)
+    os.makedirs(SAVE_DIR, exist_ok=True)
+    
+    # Create a safe slug for filenames
+    safe_slug = re.sub(r'[^\w\s-]', '', company_name).strip().replace(' ', '_').lower()
+    
+    transcript_path = os.path.join(TRANSCRIPTS_DIR, f"{safe_slug}_transcript.txt")
+    metadata_path = os.path.join(TRANSCRIPTS_DIR, f"{safe_slug}_metadata.json")
+    
+    return transcript_path, metadata_path, safe_slug
+
+def check_cached_transcript(company_name):
+    """
+    Check if a cached transcript exists for the company.
+    Returns tuple: (exists, transcript_text, metadata_dict)
+    """
+    transcript_path, metadata_path, safe_slug = get_cache_paths(company_name)
+    
+    print(f"🔍 Checking cache for {company_name}...")
+    print(f"   Transcript path: {transcript_path}")
+    print(f"   Metadata path: {metadata_path}")
+    print(f"   Transcript exists: {os.path.exists(transcript_path)}")
+    print(f"   Metadata exists: {os.path.exists(metadata_path)}")
+    
+    if os.path.exists(transcript_path) and os.path.exists(metadata_path):
+        try:
+            # Read transcript
+            with open(transcript_path, 'r', encoding='utf-8') as f:
+                transcript = f.read()
+            
+            # Read metadata
+            with open(metadata_path, 'r', encoding='utf-8') as f:
+                metadata = json.load(f)
+            
+            if transcript and metadata:
+                print(f"✅ Cache hit for {company_name}! Transcript length: {len(transcript)}")
+                return True, transcript, metadata
+        except Exception as e:
+            print(f"❌ Error reading cache: {e}")
+    else:
+        print(f"❌ No cache found for {company_name}")
+    
+    return False, None, None
+
+def save_transcript_to_cache(company_name, transcript, video_title, upload_date):
+    """
+    Save transcript and metadata to cache files.
+    """
+    transcript_path, metadata_path, safe_slug = get_cache_paths(company_name)
+    
+    try:
+        # Verify transcript content
+        if not transcript or len(transcript.strip()) == 0:
+            print(f"⚠️ Warning: Transcript is empty for {company_name}")
+            return False
+        
+        # Save transcript
+        with open(transcript_path, 'w', encoding='utf-8') as f:
+            f.write(transcript)
+        
+        # Verify file was written
+        if not os.path.exists(transcript_path):
+            print(f"❌ Error: Transcript file not created at {transcript_path}")
+            return False
+        
+        file_size = os.path.getsize(transcript_path)
+        print(f"✅ Transcript saved: {transcript_path} ({file_size} bytes)")
+        
+        # Save metadata
+        metadata = {
+            'company_name': company_name,
+            'video_title': video_title,
+            'upload_date': upload_date,
+            'transcript_length': len(transcript),
+            'cached_on': datetime.now().isoformat()
+        }
+        
+        with open(metadata_path, 'w', encoding='utf-8') as f:
+            json.dump(metadata, f, indent=2)
+        
+        # Verify metadata file was written
+        if not os.path.exists(metadata_path):
+            print(f"❌ Error: Metadata file not created at {metadata_path}")
+            return False
+        
+        print(f"✅ Metadata saved: {metadata_path}")
+        print(f"✅ Transcript cached successfully for {company_name}")
+        return True
+    except Exception as e:
+        print(f"❌ Error saving to cache: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
 def clean_text(text):
     text = re.sub(r'\s*\n\s*', ' ', text)
@@ -364,6 +464,60 @@ def display_table_preview(df, title):
     else:
         st.warning(f"No data available for {title}")
 
+def create_earnings_call_docx(company_name, video_title, upload_date, summary, from_cache=False):
+    """
+    Create a Word document with the earnings call summary.
+    Returns the document as bytes for download.
+    """
+    doc = Document()
+    
+    # Add title
+    title = doc.add_heading(f"{company_name} - Earnings Call Analysis", level=1)
+    title.alignment = 1  # Center alignment
+    
+    # Add metadata
+    doc.add_heading("Document Information", level=2)
+    info_table = doc.add_table(rows=5, cols=2)
+    info_table.style = 'Light Grid Accent 1'
+    
+    cells = info_table.rows[0].cells
+    cells[0].text = "Company"
+    cells[1].text = company_name
+    
+    cells = info_table.rows[1].cells
+    cells[0].text = "Video Title"
+    cells[1].text = video_title
+    
+    cells = info_table.rows[2].cells
+    cells[0].text = "Published Date"
+    cells[1].text = upload_date
+    
+    cells = info_table.rows[3].cells
+    cells[0].text = "Generated On"
+    cells[1].text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    cells = info_table.rows[4].cells
+    cells[0].text = "Source"
+    cells[1].text = "💾 Cached" if from_cache else "🆕 Newly Processed"
+    
+    # Add summary section
+    doc.add_heading("Executive Summary", level=2)
+    doc.add_paragraph(summary)
+    
+    # Add footer
+    doc.add_paragraph()
+    footer_para = doc.add_paragraph("---")
+    footer_para.alignment = 2  # Right alignment
+    footer_text = doc.add_paragraph(f"Generated by Financial Analysis Suite | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    footer_text.alignment = 2  # Right alignment
+    
+    # Save to bytes
+    doc_bytes = io.BytesIO()
+    doc.save(doc_bytes)
+    doc_bytes.seek(0)
+    
+    return doc_bytes.getvalue()
+
 # ==================== PARALLEL EXECUTION WITH QUEUE-BASED UPDATES ====================
 
 def run_earnings_call_analysis(company_name, status_queue):
@@ -373,23 +527,39 @@ def run_earnings_call_analysis(company_name, status_queue):
     Returns a dict with success status and results.
     """
     try:
-        status_queue.put(('progress', 0.1, "📥 Fetching audio from YouTube..."))
+        status_queue.put(('progress', 0.05, "🔍 Checking for cached transcript..."))
         
-        audio_path, video_title, upload_date = download_youtube_audio_and_metadata(company_name)
+        # Check if transcript is already cached
+        cached_exists, cached_transcript, cached_metadata = check_cached_transcript(company_name)
         
-        status_queue.put(('progress', 0.2, f"✅ Found: {video_title}"))
-        status_queue.put(('progress', 0.3, "🎙️ Transcribing audio..."))
+        if cached_exists:
+            status_queue.put(('progress', 0.2, f"✅ Using cached transcript from {cached_metadata['upload_date']}"))
+            raw_transcript = cached_transcript
+            video_title = cached_metadata['video_title']
+            upload_date = cached_metadata['upload_date']
+            status_queue.put(('progress', 0.3, f"📄 Cached transcript loaded ({len(raw_transcript)} chars)"))
+        else:
+            status_queue.put(('progress', 0.1, "📥 Fetching audio from YouTube..."))
+            
+            audio_path, video_title, upload_date = download_youtube_audio_and_metadata(company_name)
+            
+            status_queue.put(('progress', 0.2, f"✅ Found: {video_title}"))
+            status_queue.put(('progress', 0.3, "🎙️ Transcribing audio..."))
+            
+            raw_transcript = transcribe_with_groq(audio_path)
+            
+            if not raw_transcript:
+                status_queue.put(('error', None, 'Transcription failed or returned empty'))
+                return {
+                    'success': False,
+                    'error': 'Transcription failed or returned empty'
+                }
+            
+            # Save transcript to cache for future use
+            status_queue.put(('progress', 0.45, "💾 Saving transcript to cache..."))
+            save_transcript_to_cache(company_name, raw_transcript, video_title, upload_date)
         
-        raw_transcript = transcribe_with_groq(audio_path)
-        
-        if not raw_transcript:
-            status_queue.put(('error', None, 'Transcription failed or returned empty'))
-            return {
-                'success': False,
-                'error': 'Transcription failed or returned empty'
-            }
-        
-        status_queue.put(('progress', 0.5, f"✅ Transcription complete ({len(raw_transcript)} chars)"))
+        status_queue.put(('progress', 0.5, f"✅ Transcript ready ({len(raw_transcript)} chars)"))
         status_queue.put(('progress', 0.6, "🤖 Generating summary..."))
         
         cleaned = clean_text(raw_transcript)
@@ -416,7 +586,8 @@ def run_earnings_call_analysis(company_name, status_queue):
             'summary': final_summary,
             'video_title': video_title,
             'upload_date': upload_date,
-            'transcript_length': len(raw_transcript)
+            'transcript_length': len(raw_transcript),
+            'from_cache': cached_exists
         }
         
     except Exception as e:
@@ -546,6 +717,32 @@ def main():
         
         if not run_earnings_call and not run_financial_reports:
             st.warning("⚠️ Select at least one analysis type")
+        
+        # Cache management section
+        if run_earnings_call:
+            st.markdown("---")
+            st.header("💾 Cache Management")
+            
+            # Check if cache directory exists and has files
+            cache_files = []
+            if os.path.exists(TRANSCRIPTS_DIR):
+                cache_files = [f for f in os.listdir(TRANSCRIPTS_DIR) if f.endswith('_transcript.txt')]
+            
+            if cache_files:
+                st.info(f"📊 {len(cache_files)} cached transcript(s)")
+                
+                if st.button("🗑️ Clear All Cache", help="Delete all cached transcripts"):
+                    try:
+                        import shutil
+                        if os.path.exists(TRANSCRIPTS_DIR):
+                            shutil.rmtree(TRANSCRIPTS_DIR)
+                            os.makedirs(TRANSCRIPTS_DIR, exist_ok=True)
+                        st.success("✅ Cache cleared successfully!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ Error clearing cache: {e}")
+            else:
+                st.caption("📭 No cached transcripts yet")
     
     # Main input section - Single company name for both analyses
     st.header("🏢 Company Information")
@@ -662,14 +859,14 @@ def main():
     
     st.markdown("---")
     
+    # Initialize session state for results (outside button to persist across reruns)
+    if 'ec_results' not in st.session_state:
+        st.session_state.ec_results = None
+    if 'fr_results' not in st.session_state:
+        st.session_state.fr_results = None
+    
     # Main analysis button
     if st.button("🚀 Start Comprehensive Analysis", disabled=not can_process, type="primary", key="analyze_all"):
-        
-        # Initialize session state for results
-        if 'ec_results' not in st.session_state:
-            st.session_state.ec_results = None
-        if 'fr_results' not in st.session_state:
-            st.session_state.fr_results = None
         
         # Show parallel execution info
         if can_process_ec and can_process_fr:
@@ -804,125 +1001,177 @@ def main():
                         st.session_state.fr_results = None
         
         st.success("🎉 Analysis execution complete!")
+    
+    # Display combined results (outside button block so they persist across reruns)
+    st.markdown("---")
+    
+    # Create tabs for results
+    result_tabs = []
+    if st.session_state.ec_results:
+        result_tabs.append("📈 Earnings Call Summary")
+    if st.session_state.fr_results:
+        result_tabs.extend(["📊 Financial Tables", "💡 Insights", "🔍 Audit Info", "📈 Statistics"])
+    
+    if result_tabs:
+        tabs = st.tabs(result_tabs)
+        tab_idx = 0
         
-        # Display combined results
-        st.markdown("---")
-        
-        # Create tabs for results
-        result_tabs = []
+        # Earnings Call Results
         if st.session_state.ec_results:
-            result_tabs.append("📈 Earnings Call Summary")
-        if st.session_state.fr_results:
-            result_tabs.extend(["📊 Financial Tables", "💡 Insights", "🔍 Audit Info", "📈 Statistics"])
-        
-        if result_tabs:
-            tabs = st.tabs(result_tabs)
-            tab_idx = 0
-            
-            # Earnings Call Results
-            if st.session_state.ec_results:
-                with tabs[tab_idx]:
-                    st.subheader("📋 Earnings Call Summary")
-                    ec_data = st.session_state.ec_results
-                    st.info(f"**Video:** {ec_data['video_title']}\n\n**Date:** {ec_data['upload_date']}")
-                    st.markdown(ec_data['summary'])
-                    
+            with tabs[tab_idx]:
+                st.subheader("📋 Earnings Call Summary")
+                ec_data = st.session_state.ec_results
+                
+                # Show cache status
+                cache_badge = "💾 (Loaded from cache)" if ec_data.get('from_cache', False) else "🆕 (Newly processed)"
+                st.info(f"**Video:** {ec_data['video_title']}\n\n**Date:** {ec_data['upload_date']}\n\n**Source:** {cache_badge}")
+                st.markdown(ec_data['summary'])
+                
+                # Download buttons
+                st.markdown("---")
+                st.subheader("📥 Download Options")
+                col_txt, col_docx = st.columns(2)
+                
+                with col_txt:
                     st.download_button(
-                        label="📥 Download Earnings Call Summary",
+                        label="� Download as TXT",
                         data=ec_data['summary'],
                         file_name=f"{company_name}_earnings_summary.txt",
                         mime="text/plain",
-                        key="download_ec"
+                        key="download_ec_txt",
+                        use_container_width=True
                     )
-                tab_idx += 1
-            
-            # Financial Reports Results
-            if st.session_state.fr_results:
-                fr_data = st.session_state.fr_results
-                
-                # Financial Tables
-                with tabs[tab_idx]:
-                    st.subheader("📊 Financial Comparison Tables")
-                    if fr_data['comparison_tables']:
-                        for table_name, df in fr_data['comparison_tables'].items():
-                            display_table_preview(df, table_name)
-                    else:
-                        st.warning("No comparison tables generated")
-                tab_idx += 1
-                
-                # Insights
-                with tabs[tab_idx]:
-                    st.subheader("💡 AI-Generated Insights")
-                    if fr_data['insights']:
-                        st.markdown(fr_data['insights'])
-                    else:
-                        st.warning("No insights generated")
-                tab_idx += 1
-                
-                # Audit Info
-                with tabs[tab_idx]:
-                    st.subheader("🔍 Audit Information")
-                    if fr_data['audit_summary']:
-                        st.markdown(fr_data['audit_summary'])
-                    else:
-                        st.warning("No audit information available")
-                tab_idx += 1
-                
-                # Statistics
-                with tabs[tab_idx]:
-                    st.subheader("📈 Processing Statistics")
-                    stats = fr_data['stats']
                     
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric("Reports Processed", stats['reports_processed'])
-                        st.metric("Metrics Extracted", stats['metrics_extracted'])
-                    with col2:
-                        st.metric("API Calls Made", stats['api_calls'])
-                        st.metric("Chunks Processed", stats['chunks_processed'])
-                    with col3:
-                        st.metric("Tokens Used", f"{fr_data['tokens_used']:,}")
-                        st.metric("Data Points", len(fr_data['reports_data']))
-                
-                # Download section for financial reports
-                st.markdown("---")
-                st.subheader("📥 Download Reports")
-                
-                if os.path.exists(fr_data['word_path']):
-                    with open(fr_data['word_path'], "rb") as file:
-                        st.download_button(
-                            label="📄 Download Complete Financial Report (Word)",
-                            data=file.read(),
-                            file_name=f"{company_name}_financial_analysis_{default_year}.docx",
-                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                            key="download_word"
-                        )
-                    
-                    raw_data = {
-                        "company_name": company_name,
-                        "default_year": default_year,
-                        "reports_data": fr_data['reports_data'],
-                        "processing_stats": fr_data['stats'],
-                        "insights": fr_data['insights'],
-                        "audit_summary": fr_data['audit_summary']
-                    }
-                    
+                with col_docx:
+                    # Create Word document
+                    docx_data = create_earnings_call_docx(
+                        company_name,
+                        ec_data['video_title'],
+                        ec_data['upload_date'],
+                        ec_data['summary'],
+                        ec_data.get('from_cache', False)
+                    )
                     st.download_button(
-                        label="📊 Download Raw Data (JSON)",
-                        data=json.dumps(raw_data, indent=2, default=str),
-                        file_name=f"{company_name}_raw_data_{default_year}.json",
-                        mime="application/json",
-                        key="download_json"
+                        label="📑 Download as DOCX",
+                        data=docx_data,
+                        file_name=f"{company_name}_earnings_summary.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        key="download_ec_docx",
+                        use_container_width=True
                     )
+            tab_idx += 1
+        
+        # Financial Reports Results
+        if st.session_state.fr_results:
+            fr_data = st.session_state.fr_results
+            
+            # Financial Tables
+            with tabs[tab_idx]:
+                st.subheader("📊 Financial Comparison Tables")
+                
+                # Debug the structure first (optional - comment out after fixing)
+                # with st.expander("🔍 Debug Info (click to expand)"):
+                    # debug_comparison_tables(fr_data['comparison_tables'])
+                
+                if fr_data['comparison_tables']:
+                    tables_data = fr_data['comparison_tables']
+                    
+                    # More detailed check
+                    if not isinstance(tables_data, dict):
+                        st.error(f"Expected dictionary, got {type(tables_data).__name__}")
+                        st.write("Raw data:")
+                        st.write(tables_data)
+                    elif len(tables_data) == 0:
+                        st.warning("Comparison tables dictionary is empty")
+                    else:
+                        st.success(f"✅ Found {len(tables_data)} table(s)")
+                        
+                        # Display each table
+                        for table_name, df in tables_data.items():
+                            try:
+                                display_table_preview(df, table_name)
+                            except Exception as e:
+                                st.error(f"❌ Error displaying '{table_name}': {str(e)}")
+                                st.write("Raw data for debugging:")
+                                st.write(df)
+                            
+                            # Add separator between tables
+                            st.markdown("---")
+                else:
+                    st.warning("No comparison tables generated")
+                    st.info("This might mean the financial data extraction didn't find any metrics to compare.")
+            tab_idx += 1
+            
+            # Insights
+            with tabs[tab_idx]:
+                st.subheader("💡 AI-Generated Insights")
+                if fr_data['insights']:
+                    st.markdown(fr_data['insights'])
+                else:
+                    st.warning("No insights generated")
+            tab_idx += 1
+            
+            # Audit Info
+            with tabs[tab_idx]:
+                st.subheader("🔍 Audit Information")
+                if fr_data['audit_summary']:
+                    st.markdown(fr_data['audit_summary'])
+                else:
+                    st.warning("No audit information available")
+            tab_idx += 1
+            
+            # Statistics
+            with tabs[tab_idx]:
+                st.subheader("📈 Processing Statistics")
+                stats = fr_data['stats']
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Reports Processed", stats['reports_processed'])
+                    st.metric("Metrics Extracted", stats['metrics_extracted'])
+                with col2:
+                    st.metric("API Calls Made", stats['api_calls'])
+                    st.metric("Chunks Processed", stats['chunks_processed'])
+                with col3:
+                    st.metric("Tokens Used", f"{fr_data['tokens_used']:,}")
+                    st.metric("Data Points", len(fr_data['reports_data']))
+            
+            # Download section for financial reports
+            st.markdown("---")
+            st.subheader("📥 Download Reports")
+            
+            if os.path.exists(fr_data['word_path']):
+                with open(fr_data['word_path'], "rb") as file:
+                    st.download_button(
+                        label="📄 Download Complete Financial Report (Word)",
+                        data=file.read(),
+                        file_name=f"{company_name}_financial_analysis_{default_year}.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        key="download_word"
+                    )
+                
+                raw_data = {
+                    "company_name": company_name,
+                    "default_year": default_year,
+                    "reports_data": fr_data['reports_data'],
+                    "processing_stats": fr_data['stats'],
+                    "insights": fr_data['insights'],
+                    "audit_summary": fr_data['audit_summary']
+                }
+                
+                st.download_button(
+                    label="📊 Download Raw Data (JSON)",
+                    data=json.dumps(raw_data, indent=2, default=str),
+                    file_name=f"{company_name}_raw_data_{default_year}.json",
+                    mime="application/json",
+                    key="download_json"
+                )
         else:
             st.warning("No results to display. Please check the error messages above.")
     
     # Footer
     st.markdown("---")
-    st.markdown("""
-    **Financial Analysis Suite** - Run both earnings call analysis and financial report extraction in parallel!
-    
-    """)
+ 
 
 if __name__ == "__main__":
     main()
