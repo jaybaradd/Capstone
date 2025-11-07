@@ -171,6 +171,36 @@ class FinancialDataExtractor:
         self.audit_files = [f for f in files if os.path.exists(f)]
         print(f"Found {len(self.audit_files)} audit files")
 
+    def _normalize_metric_name(self, metric_name: str) -> str:
+        """Normalize metric names for consistent comparison across years"""
+        # Convert to lowercase
+        normalized = metric_name.lower()
+        
+        # Remove common variations in parentheses and units
+        normalized = re.sub(r'\(.*?\)', '', normalized)  # Remove parentheses content
+        normalized = re.sub(r'[₹$]', '', normalized)      # Remove currency symbols
+        normalized = re.sub(r'\s*rs\.?\s*', '', normalized)  # Remove Rs.
+        normalized = re.sub(r'\s*inr\s*', '', normalized)    # Remove INR
+        normalized = re.sub(r'\s*crores?\s*', '', normalized)  # Remove crores
+        normalized = re.sub(r'\s*lakhs?\s*', '', normalized)   # Remove lakhs
+        normalized = re.sub(r'\s*millions?\s*', '', normalized) # Remove millions
+        normalized = re.sub(r'\s*billions?\s*', '', normalized) # Remove billions
+        normalized = re.sub(r'\s+', ' ', normalized).strip()  # Normalize whitespace
+        
+        # Common abbreviations standardization
+        normalized = normalized.replace('profit after tax', 'pat')
+        normalized = normalized.replace('profit before tax', 'pbt')
+        normalized = normalized.replace('earnings per share', 'eps')
+        normalized = normalized.replace('return on equity', 'roe')
+        normalized = normalized.replace('return on assets', 'roa')
+        normalized = normalized.replace('return on capital employed', 'roce')
+        normalized = normalized.replace('book value per share', 'bvps')
+        normalized = normalized.replace('dividend per share', 'dps')
+        normalized = normalized.replace('earnings before interest tax depreciation amortization', 'ebitda')
+        normalized = normalized.replace('earnings before interest tax', 'ebit')
+        
+        return normalized
+
     def run(self):
         """Main processing pipeline"""
         start_time = time.perf_counter()
@@ -357,6 +387,7 @@ class FinancialDataExtractor:
         print(f"      Processing {len(chunks)} chunks")
         
         all_metrics = {}
+        metric_original_names = {}  # Track original names for display
         
         # Process chunks with original delays
         for i, chunk in enumerate(chunks):
@@ -417,12 +448,25 @@ JSON:
                         json_str = json_match.group(0)
                         chunk_metrics = json.loads(json_str)
                         
-                        # Filter out null values and merge (prioritize non-null values)
-                        for key, value in chunk_metrics.items():
+                        # Store with normalized keys while preserving original display names
+                        for metric, value in chunk_metrics.items():
                             if value is not None and value != 0:
-                                # If metric already exists, keep the non-zero value
-                                if key not in all_metrics or all_metrics[key] == 0:
-                                    all_metrics[key] = value
+                                normalized_key = self._normalize_metric_name(metric)
+                                
+                                # Keep original name for display (use first occurrence or more descriptive one)
+                                if normalized_key not in metric_original_names:
+                                    metric_original_names[normalized_key] = metric
+                                elif len(metric) > len(metric_original_names[normalized_key]):
+                                    # Prefer longer/more descriptive names
+                                    metric_original_names[normalized_key] = metric
+                                
+                                # Store value with normalized key
+                                if normalized_key not in all_metrics:
+                                    all_metrics[normalized_key] = value
+                                else:
+                                    # If duplicate, prefer non-zero values
+                                    if value != 0:
+                                        all_metrics[normalized_key] = value
                                 
                 except json.JSONDecodeError as e:
                     print(f"      JSON decode error: {e}")
@@ -432,7 +476,28 @@ JSON:
                     continue
         
         print(f"      Total unique metrics extracted: {len(all_metrics)}")
-        return all_metrics
+        
+        # Store in reports_data with display names but use normalized keys internally
+        # We'll return a dict with display names as keys for backward compatibility
+        display_metrics = {}
+        for normalized_key, value in all_metrics.items():
+            display_name = metric_original_names.get(normalized_key, normalized_key.title())
+            display_metrics[display_name] = value
+        
+        # Also store the normalized mapping for this period
+        if not hasattr(self, 'normalized_metrics'):
+            self.normalized_metrics = {}
+        if period not in self.normalized_metrics:
+            self.normalized_metrics[period] = {}
+        
+        for normalized_key, value in all_metrics.items():
+            display_name = metric_original_names.get(normalized_key, normalized_key.title())
+            self.normalized_metrics[period][normalized_key] = {
+                'value': value,
+                'display_name': display_name
+            }
+        
+        return display_metrics
 
     def _extract_audit_info(self) -> str:
         """Extract audit information from audit files"""
@@ -475,62 +540,122 @@ Maximum 200 words.
         return response or "Unable to extract audit information."
 
     def _create_comparison_tables(self) -> Dict[str, pd.DataFrame]:
-        """Create comparison tables from extracted data"""
+        """Create comparison tables from extracted data using normalized metric names"""
         print("\nCreating comparison tables...")
         
         if not self.reports_data:
             print("  No financial data available for comparison")
             return {}
         
-        # Organize data by metric
-        metrics_by_period = {}
-        all_metrics = set()
+        # Debug: Print what we have
+        print(f"  Total periods with data: {len(self.reports_data)}")
+        for period in self.reports_data:
+            print(f"    {period}: {len(self.reports_data[period])} metrics")
         
-        for period, metrics in self.reports_data.items():
-            for metric, value in metrics.items():
-                all_metrics.add(metric)
-                if metric not in metrics_by_period:
-                    metrics_by_period[metric] = {}
-                metrics_by_period[metric][period] = value
+        # Use normalized metrics for matching across periods
+        if not hasattr(self, 'normalized_metrics') or not self.normalized_metrics:
+            print("  Warning: No normalized metrics available, falling back to direct matching")
+            # Fallback to old behavior
+            metrics_by_period = {}
+            all_metrics = set()
+            display_names = {}
+            
+            for period, metrics in self.reports_data.items():
+                for metric, value in metrics.items():
+                    all_metrics.add(metric)
+                    display_names[metric] = metric
+                    if metric not in metrics_by_period:
+                        metrics_by_period[metric] = {}
+                    metrics_by_period[metric][period] = value
+        else:
+            # Organize data by NORMALIZED metric name
+            metrics_by_period = {}
+            all_metrics = set()
+            display_names = {}  # Map normalized -> best display name
+            
+            for period, normalized_data in self.normalized_metrics.items():
+                for normalized_key, data in normalized_data.items():
+                    all_metrics.add(normalized_key)
+                    value = data['value']
+                    display_name = data['display_name']
+                    
+                    # Track best display name (prefer more descriptive/longer ones)
+                    if normalized_key not in display_names:
+                        display_names[normalized_key] = display_name
+                    elif len(display_name) > len(display_names[normalized_key]):
+                        display_names[normalized_key] = display_name
+                    
+                    if normalized_key not in metrics_by_period:
+                        metrics_by_period[normalized_key] = {}
+                    metrics_by_period[normalized_key][period] = value
+        
+        print(f"  Total unique metrics (after normalization): {len(all_metrics)}")
+        print(f"  Sample normalized metrics: {list(all_metrics)[:10]}")
         
         # Create comparison tables by category
         tables = {}
         
         # Revenue and Profitability
         revenue_metrics = [m for m in all_metrics if any(term in m.lower() for term in 
-                          ['revenue', 'sales', 'turnover', 'income', 'profit', 'ebitda', 'ebit'])]
+                          ['revenue', 'sales', 'turnover', 'income', 'profit', 'ebitda', 'ebit', 'pat', 'pbt'])]
+        print(f"  Revenue metrics candidates: {len(revenue_metrics)}")
         if revenue_metrics:
-            tables['Revenue & Profitability'] = self._create_table(revenue_metrics, metrics_by_period)
+            df = self._create_table(revenue_metrics, metrics_by_period, display_names, 'Revenue & Profitability')
+            if not df.empty:
+                tables['Revenue & Profitability'] = df
+                print(f"    Created Revenue & Profitability table with {len(df)} rows")
         
         # Margins and Ratios
         margin_metrics = [m for m in all_metrics if any(term in m.lower() for term in 
-                         ['margin', 'ratio', 'roe', 'roa', 'roce', '%'])]
+                         ['margin', 'ratio', 'roe', 'roa', 'roce', '%', 'percent'])]
+        print(f"  Margin metrics candidates: {len(margin_metrics)}")
         if margin_metrics:
-            tables['Margins & Ratios'] = self._create_table(margin_metrics, metrics_by_period)
+            df = self._create_table(margin_metrics, metrics_by_period, display_names, 'Margins & Ratios')
+            if not df.empty:
+                tables['Margins & Ratios'] = df
+                print(f"    Created Margins & Ratios table with {len(df)} rows")
         
         # Balance Sheet
         balance_metrics = [m for m in all_metrics if any(term in m.lower() for term in 
                           ['assets', 'liabilities', 'equity', 'debt', 'cash', 'working capital'])]
+        print(f"  Balance sheet metrics candidates: {len(balance_metrics)}")
         if balance_metrics:
-            tables['Balance Sheet'] = self._create_table(balance_metrics, metrics_by_period)
+            df = self._create_table(balance_metrics, metrics_by_period, display_names, 'Balance Sheet')
+            if not df.empty:
+                tables['Balance Sheet'] = df
+                print(f"    Created Balance Sheet table with {len(df)} rows")
         
         # Per Share Data
         per_share_metrics = [m for m in all_metrics if any(term in m.lower() for term in 
-                            ['eps', 'per share', 'dividend', 'book value'])]
+                            ['eps', 'per share', 'dividend', 'book value', 'bvps', 'dps'])]
+        print(f"  Per share metrics candidates: {len(per_share_metrics)}")
         if per_share_metrics:
-            tables['Per Share Data'] = self._create_table(per_share_metrics, metrics_by_period)
+            df = self._create_table(per_share_metrics, metrics_by_period, display_names, 'Per Share Data')
+            if not df.empty:
+                tables['Per Share Data'] = df
+                print(f"    Created Per Share Data table with {len(df)} rows")
         
         # Cash Flow
         cash_metrics = [m for m in all_metrics if any(term in m.lower() for term in 
                        ['cash flow', 'operating cash', 'free cash'])]
+        print(f"  Cash flow metrics candidates: {len(cash_metrics)}")
         if cash_metrics:
-            tables['Cash Flow'] = self._create_table(cash_metrics, metrics_by_period)
+            df = self._create_table(cash_metrics, metrics_by_period, display_names, 'Cash Flow')
+            if not df.empty:
+                tables['Cash Flow'] = df
+                print(f"    Created Cash Flow table with {len(df)} rows")
         
-        print(f"Created {len(tables)} comparison tables")
+        print(f"  Final tables created: {len(tables)}")
         return tables
 
-    def _create_table(self, metrics: List[str], metrics_by_period: Dict) -> pd.DataFrame:
-        """Create a pandas DataFrame for specific metrics - only include metrics with data for all annual periods"""
+    def _create_table(self, metrics: List[str], metrics_by_period: Dict, 
+                      display_names: Dict = None, table_name: str = "") -> pd.DataFrame:
+        """Create a pandas DataFrame for specific metrics using normalized names with more lenient filtering"""
+        print(f"    Creating table: {table_name}")
+        
+        if display_names is None:
+            display_names = {m: m for m in metrics}
+        
         # Get all periods
         all_periods = set()
         for metric in metrics:
@@ -539,6 +664,7 @@ Maximum 200 words.
         
         # Filter to only annual periods for completeness check
         annual_periods = [p for p in all_periods if 'annual' in p.lower()]
+        print(f"      Annual periods found: {len(annual_periods)} - {annual_periods}")
         
         # Sort periods chronologically
         def sort_periods(periods):
@@ -560,44 +686,65 @@ Maximum 200 words.
             return sorted(periods, key=period_key)
         
         sorted_periods = sort_periods(list(all_periods))
+        print(f"      All periods (sorted): {sorted_periods}")
         
-        # Filter metrics to only include those with data for ALL annual periods
+        # More lenient filtering: require at least 2 annual periods (not all 3)
+        # and allow some missing values
         filtered_metrics = []
         for metric in metrics:
             if metric in metrics_by_period:
                 metric_periods = set(metrics_by_period[metric].keys())
-                annual_periods_set = set(annual_periods)
                 
-                # Check if metric has data for all annual periods
-                if len(annual_periods) >= 3 and annual_periods_set.issubset(metric_periods):
-                    # Additional check: ensure values are not None, 0, or "N/A"
-                    has_valid_data = True
+                # Count how many annual periods have data
+                annual_data_count = sum(1 for p in annual_periods if p in metric_periods)
+                
+                # Require at least 2 annual periods with data (instead of all)
+                if annual_data_count >= min(2, len(annual_periods)):
+                    # Check if at least some values are valid
+                    valid_value_count = 0
                     for period in annual_periods:
                         value = metrics_by_period[metric].get(period)
-                        if value is None or value == 0 or value == "N/A":
-                            has_valid_data = False
-                            break
+                        # More lenient: accept any numeric value including 0
+                        if value is not None and value != "N/A":
+                            valid_value_count += 1
                     
-                    if has_valid_data:
+                    # Require at least 2 valid values
+                    if valid_value_count >= min(2, len(annual_periods)):
                         filtered_metrics.append(metric)
         
-        print(f"        Filtered to {len(filtered_metrics)} metrics with complete annual data")
+        print(f"      Metrics after filtering: {len(filtered_metrics)}/{len(metrics)}")
         
-        # Create DataFrame with filtered metrics
+        # If no metrics pass the filter, try even more lenient approach
+        if not filtered_metrics and len(annual_periods) > 0:
+            print(f"      No metrics passed strict filter, using lenient filter...")
+            for metric in metrics:
+                if metric in metrics_by_period:
+                    # Just require ANY data point with a valid value
+                    if any(v is not None and v != "N/A" 
+                           for v in metrics_by_period[metric].values()):
+                        filtered_metrics.append(metric)
+            print(f"      Metrics after lenient filtering: {len(filtered_metrics)}/{len(metrics)}")
+        
+        # Create DataFrame with display names
         data = []
         for metric in filtered_metrics:
             if metric in metrics_by_period:
-                row = [metric]
+                # Use display name for the metric column
+                display_name = display_names.get(metric, metric.title())
+                row = [display_name]
                 for period in sorted_periods:
                     value = metrics_by_period[metric].get(period, "N/A")
                     row.append(value)
                 data.append(row)
         
         if not data:
+            print(f"      WARNING: No data rows created for {table_name}")
             return pd.DataFrame()
         
         columns = ['Metric'] + sorted_periods
-        return pd.DataFrame(data, columns=columns)
+        df = pd.DataFrame(data, columns=columns)
+        print(f"      Created table with {len(df)} rows and {len(df.columns)} columns")
+        return df
 
     def _generate_insights(self) -> str:
         """Generate insights from the comparison data"""
