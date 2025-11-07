@@ -1,0 +1,10 @@
+streamlit
+groq
+google-api-python-client
+yt-dlp
+pydub
+ffmpeg-python
+pandas
+python-docx
+PyPDF2
+python-dotenv
