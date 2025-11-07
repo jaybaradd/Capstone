@@ -30,8 +30,7 @@ except ImportError:
 # === CONFIGURATION ===
 SAVE_DIR = "calls_mp3s"
 FFMPEG_PATH = "/usr/local/bin"
-YOUTUBE_API_KEY = "AIzaSyDS9r0TtpLZ3hg4rJzRbqWrc_-Bvht_3l4"
-
+YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
 # Get API key from environment
 GROQ_API_KEY = os.getenv("GROQ_API_KEY") or os.getenv("ChatGroq_API_KEY")
 if GROQ_API_KEY:
