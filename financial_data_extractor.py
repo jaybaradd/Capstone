@@ -725,17 +725,29 @@ Maximum 200 words.
                         filtered_metrics.append(metric)
             print(f"      Metrics after lenient filtering: {len(filtered_metrics)}/{len(metrics)}")
         
-        # Create DataFrame with display names
+        # Create DataFrame with display names and enforce row-level quality
         data = []
+        rows_rejected = 0
         for metric in filtered_metrics:
             if metric in metrics_by_period:
                 # Use display name for the metric column
                 display_name = display_names.get(metric, metric.title())
-                row = [display_name]
+                row_values = []
                 for period in sorted_periods:
                     value = metrics_by_period[metric].get(period, "N/A")
-                    row.append(value)
-                data.append(row)
+                    row_values.append(value)
+                
+                # Enforce quality: row must have at least 2 numerical values (not N/A)
+                numerical_count = sum(1 for v in row_values if v is not None and v != "N/A" and isinstance(v, (int, float)))
+                
+                if numerical_count >= 2:
+                    row = [display_name] + row_values
+                    data.append(row)
+                else:
+                    rows_rejected += 1
+        
+        if rows_rejected > 0:
+            print(f"      Rejected {rows_rejected} rows with insufficient numerical data (< 2 values)")
         
         if not data:
             print(f"      WARNING: No data rows created for {table_name}")
